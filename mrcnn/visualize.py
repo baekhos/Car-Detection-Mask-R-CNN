@@ -13,6 +13,7 @@ import random
 import itertools
 import colorsys
 
+import tkinter
 import numpy as np
 from skimage.measure import find_contours
 import matplotlib.pyplot as plt
