@@ -17,7 +17,7 @@ ROOT_DIR = os.path.abspath("../../")
 sys.path.append(ROOT_DIR)  # To find local version of the library
 from mrcnn.config import Config
 from mrcnn import model as modellib, utils
-
+from keras.preprocessing.image import Iterator
 
 from utils import load_cache
 import cv2
@@ -61,10 +61,12 @@ class CarsConfig(Config):
     # GPU_COUNT = 8
 
     # Number of classes (including background)
-    NUM_CLASSES = 1 + 1  # COCO has 80 classes
+    NUM_CLASSES = 1 + 1  # Cars or not
 
 #%%
 class BoxCarsDataset(object):
+
+
     def __init__(self, load_atlas = False, load_split = None, use_estimated_3DBB = False, estimated_3DBB_path = None):
         self.dataset = load_cache(BOXCARS_DATASET)
         self.use_estimated_3DBB = use_estimated_3DBB
@@ -170,6 +172,45 @@ class BoxCarsDataset(object):
 
 
 ############################################################
+#  Data generator
+############################################################
+
+class BoxCarsDataGenerator(Iterator):
+    def __init__(self, dataset, part, batch_size=8, training_mode=False, seed=None, generate_y = True, image_size = (224,224)):
+        assert image_size == (224,224), "only images 224x224 are supported by unpack_3DBB for now, if necessary it can be changed"
+        assert dataset.X[part] is not None, "load some classification split first"
+        super().__init__(dataset.X[part].shape[0], batch_size, training_mode, seed)
+        self.part = part
+        self.generate_y = generate_y
+        self.dataset = dataset
+        self.image_size = image_size
+        self.training_mode = training_mode
+        if self.dataset.atlas is None:
+            self.dataset.load_atlas()
+
+    #%%
+    def next(self):
+        with self.lock:
+            index_array, current_index, current_batch_size = next(self.index_generator)
+        x = np.empty([current_batch_size] + list(self.image_size) + [3], dtype=np.float32)
+        for i, ind in enumerate(index_array):
+            vehicle_id, instance_id = self.dataset.X[self.part][ind]
+            vehicle, instance, bb3d = self.dataset.get_vehicle_instance_data(vehicle_id, instance_id)
+            image = self.dataset.get_image(vehicle_id, instance_id)
+            if self.training_mode:
+                image = alter_HSV(image) # randomly alternate color
+                image = image_drop(image) # randomly remove part of the image
+                bb_noise = np.clip(np.random.randn(2) * 1.5, -5, 5) # generate random bounding box movement
+                flip = bool(random.getrandbits(1)) # random flip
+                image, bb3d = add_bb_noise_flip(image, bb3d, flip, bb_noise)
+            image = unpack_3DBB(image, bb3d)
+            image = (image.astype(np.float32) - 116)/128.
+            x[i, ...] = image
+        if not self.generate_y:
+            return x
+        y = self.dataset.Y[self.part][index_array]
+        return x, y
+############################################################
 #  Training
 ############################################################
 
@@ -215,7 +256,7 @@ if __name__ == '__main__':
             DETECTION_MIN_CONFIDENCE = 0
         config = InferenceConfig()
     config.display()
-
+    dataset = BoxCarsDataset(load_split="hard", load_atlas=True)
     # Create model
     if args.command == "train":
         model = modellib.MaskRCNN(mode="training", config=config,
@@ -245,7 +286,27 @@ if __name__ == '__main__':
         # Training dataset. Use the training set and 35K from the
         # validation set, as as in the Mask RCNN paper.
         dataset_train = BoxCarsDataset()
+        print("Training...")
+        # %% initialize dataset for training
+        dataset.initialize_data("train")
+        dataset.initialize_data("validation")
+        generator_train = BoxCarsDataGenerator(dataset, "train", args.batch_size, training_mode=True)
+        generator_val = BoxCarsDataGenerator(dataset, "validation", args.batch_size, training_mode=False)
+
+        # %% callbacks
+        ensure_dir(args.tensorboard_dir)
+        ensure_dir(args.snapshots_dir)
+        tb_callback = TensorBoard(args.tensorboard_dir, histogram_freq=1, write_graph=False, write_images=False)
+        saver_callback = ModelCheckpoint(os.path.join(args.snapshots_dir, "model_{epoch:03d}_{val_acc:.2f}.h5"),
+                                         period=4)
+
+        # %% get initial epoch
+        initial_epoch = 0
+        if args.resume is not None:
+            initial_epoch = int(os.path.basename(args.resume).split("_")[1]) + 1
         #-----------------here so far--------------------
+        # need to figure how mask rcnn wants the data
+        #most likely I ll need to build a class that inherits utils.Dataset
         dataset_train.load_coco(args.dataset, "train", year=args.year, auto_download=args.download)
         if args.year in '2014':
             dataset_train.load_coco(args.dataset, "valminusminival", year=args.year, auto_download=args.download)
