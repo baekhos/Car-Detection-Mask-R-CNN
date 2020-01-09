@@ -3,12 +3,11 @@
 import os
 import sys
 import time
+import json
 import numpy as np
 import imgaug  # https://github.com/aleju/imgaug (pip3 install imgaug)
+import skimage.draw
 
-import zipfile
-import urllib.request
-import shutil
 
 # Root directory of the project
 ROOT_DIR = os.path.abspath("../../")
@@ -17,28 +16,20 @@ ROOT_DIR = os.path.abspath("../../")
 sys.path.append(ROOT_DIR)  # To find local version of the library
 from mrcnn.config import Config
 from mrcnn import model as modellib, utils
-from keras.preprocessing.image import Iterator
-
-from utils import load_cache
-import cv2
+import datetime
 import os
 #%%
-# change this to your location
-BOXCARS_DATASET_ROOT = "C:\\Users\\Nitroi\\Desktop\\Car-Detection-Mask-R-CNN\\Datasets\\BoxCars116k"
+# Root directory of the project
+ROOT_DIR = os.path.abspath("../../")
 
-#%%
-BOXCARS_IMAGES_ROOT = os.path.join(BOXCARS_DATASET_ROOT, "images")
-BOXCARS_DATASET = os.path.join(BOXCARS_DATASET_ROOT, "dataset.pkl")
-BOXCARS_ATLAS = os.path.join(BOXCARS_DATASET_ROOT, "atlas.pkl")
-BOXCARS_CLASSIFICATION_SPLITS = os.path.join(BOXCARS_DATASET_ROOT, "classification_splits.pkl")
-
+# Import Mask RCNN
+sys.path.append(ROOT_DIR)  # To find local version of the library
 # Path to trained weights file
-COCO_MODEL_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
+COCO_WEIGHTS_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
 
 # Directory to save logs and model checkpoints, if not provided
 # through the command line argument --logs
 DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
-DEFAULT_DATASET_YEAR = "2017"
 
 ############################################################
 #  Configurations
@@ -46,170 +37,461 @@ DEFAULT_DATASET_YEAR = "2017"
 
 
 class CarsConfig(Config):
-    """Configuration for training on MS COCO.
-    Derives from the base Config class and overrides values specific
-    to the COCO dataset.
+    """Configuration for training on the car  dataset.
+    Derives from the base Config class and overrides some values.
     """
     # Give the configuration a recognizable name
-    NAME = "cars"
+    NAME = "car"
 
     # We use a GPU with 12GB memory, which can fit two images.
     # Adjust down if you use a smaller GPU.
     IMAGES_PER_GPU = 1
 
-    # Uncomment to train on 8 GPUs (default is 1)
-    # GPU_COUNT = 8
-
     # Number of classes (including background)
-    NUM_CLASSES = 1 + 1  # Cars or not
+    NUM_CLASSES = 1 + 1  # Background + car
 
+    # Number of training steps per epoch
+    STEPS_PER_EPOCH = 100
+
+    # Skip detections with < 90% confidence
+    DETECTION_MIN_CONFIDENCE = 0.9
 #%%
-class BoxCarsDataset(object):
+# class BoxCarsDataset(object):
+#
+#
+#     def __init__(self, load_atlas = False, load_split = None, use_estimated_3DBB = False, estimated_3DBB_path = None):
+#         self.dataset = load_cache(BOXCARS_DATASET)
+#         self.use_estimated_3DBB = use_estimated_3DBB
+#
+#         self.atlas = None
+#         self.split = None
+#         self.split_name = None
+#         self.estimated_3DBB = None
+#         self.X = {}
+#         self.Y = {}
+#         for part in ("train", "validation", "test"):
+#             self.X[part] = None
+#             self.Y[part] = None # for labels as array of 0-1 flags
+#
+#         if load_atlas:
+#             self.load_atlas()
+#         if load_split is not None:
+#             self.load_classification_split(load_split)
+#         if self.use_estimated_3DBB:
+#             self.estimated_3DBB = load_cache(estimated_3DBB_path)
+#
+#     #%%
+#     def load_atlas(self):
+#         self.atlas = load_cache(BOXCARS_ATLAS)
+#
+#     #%%
+#     def load_classification_split(self, split_name):
+#         self.split = load_cache(BOXCARS_CLASSIFICATION_SPLITS)[split_name]
+#         self.split_name = split_name
+#
+#     #%%
+#     def get_image(self, vehicle_id, instance_id):
+#         """
+#         returns decoded image from atlas in RGB channel order
+#         """
+#         return cv2.cvtColor(cv2.imdecode(self.atlas[vehicle_id][instance_id], 1), cv2.COLOR_BGR2RGB)
+#
+#     #%%
+#     def get_vehicle_instance_data(self, vehicle_id, instance_id, original_image_coordinates=False):
+#         """
+#         original_image_coordinates: the 3DBB coordinates are in the original image space
+#                                     to convert them into cropped image space, it is necessary to subtract instance["3DBB_offset"]
+#                                     which is done if this parameter is False.
+#         """
+#         vehicle = self.dataset["samples"][vehicle_id]
+#         instance = vehicle["instances"][instance_id]
+#         if not self.use_estimated_3DBB:
+#             bb3d = self.dataset["samples"][vehicle_id]["instances"][instance_id]["3DBB"]
+#         else:
+#             bb3d = self.estimated_3DBB[vehicle_id][instance_id]
+#
+#         if not original_image_coordinates:
+#             bb3d = bb3d - instance["3DBB_offset"]
+#
+#         return vehicle, instance, bb3d
+#
+#
+#     #%%
+#     def initialize_data(self, part):
+#         assert self.split is not None, "load classification split first"
+#         assert part in self.X, "unknown part -- use: train, validation, test"
+#         assert self.X[part] is None, "part %s was already initialized"%part
+#         data = self.split[part]
+#         x, y = [], []
+#         for vehicle_id, label in data:
+#             num_instances = len(self.dataset["samples"][vehicle_id]["instances"])
+#             x.extend([(vehicle_id, instance_id) for instance_id in range(num_instances)])
+#             y.extend([label]*num_instances)
+#         self.X[part] = np.asarray(x,dtype=int)
+#
+#         y = np.asarray(y,dtype=int)
+#         y_categorical = np.zeros((y.shape[0], self.get_number_of_classes()))
+#         y_categorical[np.arange(y.shape[0]), y] = 1
+#         self.Y[part] = y_categorical
+#
+#
+#
+#     def get_number_of_classes(self):
+#         return len(self.split["types_mapping"])
+#
+#
+#     def evaluate(self, probabilities, part="test", top_k=1):
+#         samples = self.X[part]
+#         assert samples.shape[0] == probabilities.shape[0]
+#         assert self.get_number_of_classes() == probabilities.shape[1]
+#         part_data = self.split[part]
+#         probs_inds = {}
+#         for vehicle_id, _ in part_data:
+#             probs_inds[vehicle_id] = np.zeros(len(self.dataset["samples"][vehicle_id]["instances"]), dtype=int)
+#         for i, (vehicle_id, instance_id) in enumerate(samples):
+#             probs_inds[vehicle_id][instance_id] = i
+#
+#         get_hit = lambda probs, gt: int(gt in np.argsort(probs.flatten())[-top_k:])
+#         hits = []
+#         hits_tracks = []
+#         for vehicle_id, label in part_data:
+#             inds = probs_inds[vehicle_id]
+#             hits_tracks.append(get_hit(np.mean(probabilities[inds, :], axis=0), label))
+#             for ind in inds:
+#                 hits.append(get_hit(probabilities[ind, :], label))
+#
+#         return np.mean(hits), np.mean(hits_tracks)
 
 
-    def __init__(self, load_atlas = False, load_split = None, use_estimated_3DBB = False, estimated_3DBB_path = None):
-        self.dataset = load_cache(BOXCARS_DATASET)
-        self.use_estimated_3DBB = use_estimated_3DBB
-        
-        self.atlas = None
-        self.split = None
-        self.split_name = None
-        self.estimated_3DBB = None
-        self.X = {}
-        self.Y = {}
-        for part in ("train", "validation", "test"):
-            self.X[part] = None
-            self.Y[part] = None # for labels as array of 0-1 flags
-            
-        if load_atlas:
-            self.load_atlas()
-        if load_split is not None:
-            self.load_classification_split(load_split)
-        if self.use_estimated_3DBB:
-            self.estimated_3DBB = load_cache(estimated_3DBB_path)
-        
-    #%%
-    def load_atlas(self):
-        self.atlas = load_cache(BOXCARS_ATLAS)
-    
-    #%%
-    def load_classification_split(self, split_name):
-        self.split = load_cache(BOXCARS_CLASSIFICATION_SPLITS)[split_name]
-        self.split_name = split_name
-       
-    #%%
-    def get_image(self, vehicle_id, instance_id):
+class CarsDataset(utils.Dataset):
+
+    def load_car(self, dataset_dir, subset):
+        """Load a subset of the Car dataset.
+        dataset_dir: Root directory of the dataset.
+        subset: Subset to load: train or val
         """
-        returns decoded image from atlas in RGB channel order
+        # Add classes. We have only one class to add.
+        self.add_class("car", 1, "car")
+
+        # Train or validation dataset?
+        assert subset in ["train", "val"]
+        dataset_dir = os.path.join(dataset_dir, subset)
+
+        # Load annotations
+        # VGG Image Annotator (up to version 1.6) saves each image in the form:
+        # { 'filename': '28503151_5b5b7ec140_b.jpg',
+        #   'regions': {
+        #       '0': {
+        #           'region_attributes': {},
+        #           'shape_attributes': {
+        #               'all_points_x': [...],
+        #               'all_points_y': [...],
+        #               'name': 'polygon'}},
+        #       ... more regions ...
+        #   },
+        #   'size': 100202
+        # }
+        # We mostly care about the x and y coordinates of each region
+        # Note: In VIA 2.0, regions was changed from a dict to a list.
+        annotations = json.load(open(os.path.join(dataset_dir, "via_region_data.json")))
+        annotations = list(annotations.values())  # don't need the dict keys
+
+        # The VIA tool saves images in the JSON even if they don't have any
+        # annotations. Skip unannotated images.
+        annotations = [a for a in annotations if a['regions']]
+
+        # Add images
+        for a in annotations:
+            # Get the x, y coordinaets of points of the polygons that make up
+            # the outline of each object instance. These are stores in the
+            # shape_attributes (see json format above)
+            # The if condition is needed to support VIA versions 1.x and 2.x.
+            if type(a['regions']) is dict:
+                polygons = [r['shape_attributes'] for r in a['regions'].values()]
+            else:
+                polygons = [r['shape_attributes'] for r in a['regions']]
+
+            # load_mask() needs the image size to convert polygons to masks.
+            # Unfortunately, VIA doesn't include it in JSON, so we must read
+            # the image. This is only managable since the dataset is tiny.
+            image_path = os.path.join(dataset_dir, a['filename'])
+            image = skimage.io.imread(image_path)
+            height, width = image.shape[:2]
+
+            self.add_image(
+                "car",
+                image_id=a['filename'],  # use file name as a unique image id
+                path=image_path,
+                width=width, height=height,
+                polygons=polygons)
+
+    def load_mask(self, image_id):
+        """Generate instance masks for an image.
+       Returns:
+        masks: A bool array of shape [height, width, instance count] with
+            one mask per instance.
+        class_ids: a 1D array of class IDs of the instance masks.
         """
-        return cv2.cvtColor(cv2.imdecode(self.atlas[vehicle_id][instance_id], 1), cv2.COLOR_BGR2RGB)
-        
-    #%%
-    def get_vehicle_instance_data(self, vehicle_id, instance_id, original_image_coordinates=False):
-        """
-        original_image_coordinates: the 3DBB coordinates are in the original image space
-                                    to convert them into cropped image space, it is necessary to subtract instance["3DBB_offset"]
-                                    which is done if this parameter is False. 
-        """
-        vehicle = self.dataset["samples"][vehicle_id]
-        instance = vehicle["instances"][instance_id]
-        if not self.use_estimated_3DBB:
-            bb3d = self.dataset["samples"][vehicle_id]["instances"][instance_id]["3DBB"]
+        # If not a car dataset image, delegate to parent class.
+        image_info = self.image_info[image_id]
+        if image_info["source"] != "car":
+            return super(self.__class__, self).load_mask(image_id)
+
+        # Convert polygons to a bitmap mask of shape
+        # [height, width, instance_count]
+        info = self.image_info[image_id]
+        mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
+                        dtype=np.uint8)
+        for i, p in enumerate(info["polygons"]):
+            # Get indexes of pixels inside the polygon and set them to 1
+            rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
+            mask[rr, cc, i] = 1
+
+        # Return mask, and array of class IDs of each instance. Since we have
+        # one class ID only, we return an array of 1s
+        return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
+
+    def image_reference(self, image_id):
+        """Return the path of the image."""
+        info = self.image_info[image_id]
+        if info["source"] == "car":
+            return info["path"]
         else:
-            bb3d = self.estimated_3DBB[vehicle_id][instance_id]
-            
-        if not original_image_coordinates:
-            bb3d = bb3d - instance["3DBB_offset"]
+            super(self.__class__, self).image_reference(image_id)
 
-        return vehicle, instance, bb3d 
-            
-       
-    #%%
-    def initialize_data(self, part):
-        assert self.split is not None, "load classification split first"
-        assert part in self.X, "unknown part -- use: train, validation, test"
-        assert self.X[part] is None, "part %s was already initialized"%part
-        data = self.split[part]
-        x, y = [], []
-        for vehicle_id, label in data:
-            num_instances = len(self.dataset["samples"][vehicle_id]["instances"])
-            x.extend([(vehicle_id, instance_id) for instance_id in range(num_instances)])
-            y.extend([label]*num_instances)
-        self.X[part] = np.asarray(x,dtype=int)
-
-        y = np.asarray(y,dtype=int)
-        y_categorical = np.zeros((y.shape[0], self.get_number_of_classes()))
-        y_categorical[np.arange(y.shape[0]), y] = 1
-        self.Y[part] = y_categorical
-        
-
-
-    def get_number_of_classes(self):
-        return len(self.split["types_mapping"])
-        
-        
-    def evaluate(self, probabilities, part="test", top_k=1):
-        samples = self.X[part]
-        assert samples.shape[0] == probabilities.shape[0]
-        assert self.get_number_of_classes() == probabilities.shape[1]
-        part_data = self.split[part]
-        probs_inds = {}
-        for vehicle_id, _ in part_data:
-            probs_inds[vehicle_id] = np.zeros(len(self.dataset["samples"][vehicle_id]["instances"]), dtype=int)
-        for i, (vehicle_id, instance_id) in enumerate(samples):
-            probs_inds[vehicle_id][instance_id] = i
-            
-        get_hit = lambda probs, gt: int(gt in np.argsort(probs.flatten())[-top_k:])
-        hits = []
-        hits_tracks = []
-        for vehicle_id, label in part_data:
-            inds = probs_inds[vehicle_id]
-            hits_tracks.append(get_hit(np.mean(probabilities[inds, :], axis=0), label))
-            for ind in inds:
-                hits.append(get_hit(probabilities[ind, :], label))
-                
-        return np.mean(hits), np.mean(hits_tracks)
-
-
+    # def __init__(self, load_atlas=False, load_split=None, use_estimated_3DBB=False, estimated_3DBB_path=None):
+    #     self.dataset = load_cache(BOXCARS_DATASET)
+    #     self.use_estimated_3DBB = use_estimated_3DBB
+    #
+    #     self.atlas = None
+    #     self.split = None
+    #     self.split_name = None
+    #     self.estimated_3DBB = None
+    #     self.X = {}
+    #     self.Y = {}
+    #     for part in ("train", "validation", "test"):
+    #         self.X[part] = None
+    #         self.Y[part] = None  # for labels as array of 0-1 flags
+    #
+    #     if load_atlas:
+    #         self.load_atlas()
+    #     if load_split is not None:
+    #         self.load_classification_split(load_split)
+    #     if self.use_estimated_3DBB:
+    #         self.estimated_3DBB = load_cache(estimated_3DBB_path)
+    #
+    # # %%
+    # def load_atlas(self):
+    #     self.atlas = load_cache(BOXCARS_ATLAS)
+    #
+    # # %%
+    # def load_classification_split(self, split_name):
+    #     self.split = load_cache(BOXCARS_CLASSIFICATION_SPLITS)[split_name]
+    #     self.split_name = split_name
+    #
+    # # %%
+    # def get_image(self, vehicle_id, instance_id):
+    #     """
+    #     returns decoded image from atlas in RGB channel order
+    #     """
+    #     return cv2.cvtColor(cv2.imdecode(self.atlas[vehicle_id][instance_id], 1), cv2.COLOR_BGR2RGB)
+    #
+    # # %%
+    # def get_vehicle_instance_data(self, vehicle_id, instance_id, original_image_coordinates=False):
+    #     """
+    #     original_image_coordinates: the 3DBB coordinates are in the original image space
+    #                                 to convert them into cropped image space, it is necessary to subtract instance["3DBB_offset"]
+    #                                 which is done if this parameter is False.
+    #     """
+    #     vehicle = self.dataset["samples"][vehicle_id]
+    #     instance = vehicle["instances"][instance_id]
+    #     if not self.use_estimated_3DBB:
+    #         bb3d = self.dataset["samples"][vehicle_id]["instances"][instance_id]["3DBB"]
+    #     else:
+    #         bb3d = self.estimated_3DBB[vehicle_id][instance_id]
+    #
+    #     if not original_image_coordinates:
+    #         bb3d = bb3d - instance["3DBB_offset"]
+    #
+    #     return vehicle, instance, bb3d
+    #
+    #     # %%
+    #
+    # def initialize_data(self, part):
+    #     assert self.split is not None, "load classification split first"
+    #     assert part in self.X, "unknown part -- use: train, validation, test"
+    #     assert self.X[part] is None, "part %s was already initialized" % part
+    #     data = self.split[part]
+    #     x, y = [], []
+    #     for vehicle_id, label in data:
+    #         num_instances = len(self.dataset["samples"][vehicle_id]["instances"])
+    #         x.extend([(vehicle_id, instance_id) for instance_id in range(num_instances)])
+    #         y.extend([label] * num_instances)
+    #     self.X[part] = np.asarray(x, dtype=int)
+    #
+    #     y = np.asarray(y, dtype=int)
+    #     y_categorical = np.zeros((y.shape[0], self.get_number_of_classes()))
+    #     y_categorical[np.arange(y.shape[0]), y] = 1
+    #     self.Y[part] = y_categorical
+    #
+    # def get_number_of_classes(self):
+    #     return len(self.split["types_mapping"])
+    #
+    # def evaluate(self, probabilities, part="test", top_k=1):
+    #     samples = self.X[part]
+    #     assert samples.shape[0] == probabilities.shape[0]
+    #     assert self.get_number_of_classes() == probabilities.shape[1]
+    #     part_data = self.split[part]
+    #     probs_inds = {}
+    #     for vehicle_id, _ in part_data:
+    #         probs_inds[vehicle_id] = np.zeros(len(self.dataset["samples"][vehicle_id]["instances"]), dtype=int)
+    #     for i, (vehicle_id, instance_id) in enumerate(samples):
+    #         probs_inds[vehicle_id][instance_id] = i
+    #
+    #     get_hit = lambda probs, gt: int(gt in np.argsort(probs.flatten())[-top_k:])
+    #     hits = []
+    #     hits_tracks = []
+    #     for vehicle_id, label in part_data:
+    #         inds = probs_inds[vehicle_id]
+    #         hits_tracks.append(get_hit(np.mean(probabilities[inds, :], axis=0), label))
+    #         for ind in inds:
+    #             hits.append(get_hit(probabilities[ind, :], label))
+    #
+    #     return np.mean(hits), np.mean(hits_tracks)
 ############################################################
 #  Data generator
 ############################################################
 
-class BoxCarsDataGenerator(Iterator):
-    def __init__(self, dataset, part, batch_size=8, training_mode=False, seed=None, generate_y = True, image_size = (224,224)):
-        assert image_size == (224,224), "only images 224x224 are supported by unpack_3DBB for now, if necessary it can be changed"
-        assert dataset.X[part] is not None, "load some classification split first"
-        super().__init__(dataset.X[part].shape[0], batch_size, training_mode, seed)
-        self.part = part
-        self.generate_y = generate_y
-        self.dataset = dataset
-        self.image_size = image_size
-        self.training_mode = training_mode
-        if self.dataset.atlas is None:
-            self.dataset.load_atlas()
+# class BoxCarsDataGenerator(Iterator):
+#     def __init__(self, dataset, part, batch_size=8, training_mode=False, seed=None, generate_y = True, image_size = (224,224)):
+#         assert image_size == (224,224), "only images 224x224 are supported by unpack_3DBB for now, if necessary it can be changed"
+#         assert dataset.X[part] is not None, "load some classification split first"
+#         super().__init__(dataset.X[part].shape[0], batch_size, training_mode, seed)
+#         self.part = part
+#         self.generate_y = generate_y
+#         self.dataset = dataset
+#         self.image_size = image_size
+#         self.training_mode = training_mode
+#         if self.dataset.atlas is None:
+#             self.dataset.load_atlas()
+#
+#     #%%
+#     def next(self):
+#         with self.lock:
+#             index_array, current_index, current_batch_size = next(self.index_generator)
+#         x = np.empty([current_batch_size] + list(self.image_size) + [3], dtype=np.float32)
+#         for i, ind in enumerate(index_array):
+#             vehicle_id, instance_id = self.dataset.X[self.part][ind]
+#             vehicle, instance, bb3d = self.dataset.get_vehicle_instance_data(vehicle_id, instance_id)
+#             image = self.dataset.get_image(vehicle_id, instance_id)
+#             if self.training_mode:
+#                 image = alter_HSV(image) # randomly alternate color
+#                 image = image_drop(image) # randomly remove part of the image
+#                 bb_noise = np.clip(np.random.randn(2) * 1.5, -5, 5) # generate random bounding box movement
+#                 flip = bool(random.getrandbits(1)) # random flip
+#                 image, bb3d = add_bb_noise_flip(image, bb3d, flip, bb_noise)
+#             image = unpack_3DBB(image, bb3d)
+#             image = (image.astype(np.float32) - 116)/128.
+#             x[i, ...] = image
+#         if not self.generate_y:
+#             return x
+#         y = self.dataset.Y[self.part][index_array]
+#         return x, y
 
-    #%%
-    def next(self):
-        with self.lock:
-            index_array, current_index, current_batch_size = next(self.index_generator)
-        x = np.empty([current_batch_size] + list(self.image_size) + [3], dtype=np.float32)
-        for i, ind in enumerate(index_array):
-            vehicle_id, instance_id = self.dataset.X[self.part][ind]
-            vehicle, instance, bb3d = self.dataset.get_vehicle_instance_data(vehicle_id, instance_id)
-            image = self.dataset.get_image(vehicle_id, instance_id)
-            if self.training_mode:
-                image = alter_HSV(image) # randomly alternate color
-                image = image_drop(image) # randomly remove part of the image
-                bb_noise = np.clip(np.random.randn(2) * 1.5, -5, 5) # generate random bounding box movement
-                flip = bool(random.getrandbits(1)) # random flip
-                image, bb3d = add_bb_noise_flip(image, bb3d, flip, bb_noise)
-            image = unpack_3DBB(image, bb3d)
-            image = (image.astype(np.float32) - 116)/128.
-            x[i, ...] = image
-        if not self.generate_y:
-            return x
-        y = self.dataset.Y[self.part][index_array]
-        return x, y
+def train(model):
+    """Train the model."""
+    # Training dataset.
+    dataset_train = CarsDataset()
+    dataset_train.load_balloon(args.dataset, "train")
+    dataset_train.prepare()
+
+    # Validation dataset
+    dataset_val = CarsDataset()
+    dataset_val.load_balloon(args.dataset, "val")
+    dataset_val.prepare()
+
+    # *** This training schedule is an example. Update to your needs ***
+    # Since we're using a very small dataset, and starting from
+    # COCO trained weights, we don't need to train too long. Also,
+    # no need to train all layers, just the heads should do it.
+    print("Training network heads")
+    model.train(dataset_train, dataset_val,
+                learning_rate=config.LEARNING_RATE,
+                epochs=30,
+                layers='heads')
+
+
+def color_splash(image, mask):
+    """Apply color splash effect.
+    image: RGB image [height, width, 3]
+    mask: instance segmentation mask [height, width, instance count]
+
+    Returns result image.
+    """
+    # Make a grayscale copy of the image. The grayscale copy still
+    # has 3 RGB channels, though.
+    gray = skimage.color.gray2rgb(skimage.color.rgb2gray(image)) * 255
+    # Copy color pixels from the original color image where mask is set
+    if mask.shape[-1] > 0:
+        # We're treating all instances as one, so collapse the mask into one layer
+        mask = (np.sum(mask, -1, keepdims=True) >= 1)
+        splash = np.where(mask, image, gray).astype(np.uint8)
+    else:
+        splash = gray.astype(np.uint8)
+    return splash
+
+
+def detect_and_color_splash(model, image_path=None, video_path=None):
+    assert image_path or video_path
+
+    # Image or video?
+    if image_path:
+        # Run model detection and generate the color splash effect
+        print("Running on {}".format(args.image))
+        # Read image
+        image = skimage.io.imread(args.image)
+        # Detect objects
+        r = model.detect([image], verbose=1)[0]
+        # Color splash
+        splash = color_splash(image, r['masks'])
+        # Save output
+        file_name = "splash_{:%Y%m%dT%H%M%S}.png".format(datetime.datetime.now())
+        skimage.io.imsave(file_name, splash)
+    elif video_path:
+        import cv2
+        # Video capture
+        vcapture = cv2.VideoCapture(video_path)
+        width = int(vcapture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(vcapture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = vcapture.get(cv2.CAP_PROP_FPS)
+
+        # Define codec and create video writer
+        file_name = "splash_{:%Y%m%dT%H%M%S}.avi".format(datetime.datetime.now())
+        vwriter = cv2.VideoWriter(file_name,
+                                  cv2.VideoWriter_fourcc(*'MJPG'),
+                                  fps, (width, height))
+
+        count = 0
+        success = True
+        while success:
+            print("frame: ", count)
+            # Read next image
+            success, image = vcapture.read()
+            if success:
+                # OpenCV returns images as BGR, convert to RGB
+                image = image[..., ::-1]
+                # Detect objects
+                r = model.detect([image], verbose=0)[0]
+                # Color splash
+                splash = color_splash(image, r['masks'])
+                # RGB -> BGR to save image to video
+                splash = splash[..., ::-1]
+                # Add image to video writer
+                vwriter.write(splash)
+                count += 1
+        vwriter.release()
+    print("Saved to ", file_name)
+
 ############################################################
 #  Training
 ############################################################
@@ -220,27 +502,36 @@ if __name__ == '__main__':
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description='Train Mask R-CNN on BoxCars.')
+        description='Train Mask R-CNN to detect cars.')
     parser.add_argument("command",
                         metavar="<command>",
-                        help="'train' or 'evaluate' on BoxCars")
-    parser.add_argument('--dataset', required=True,
-                        metavar="/path/to/BoxCars/",
-                        help='Directory of the BoxCars dataset')
-    parser.add_argument('--model', required=True,
+                        help="'train' or 'test'")
+    parser.add_argument('--dataset', required=False,
+                        metavar="/path/to/cars/dataset/",
+                        help='Directory of the Cars dataset')
+    parser.add_argument('--weights', required=True,
                         metavar="/path/to/weights.h5",
                         help="Path to weights .h5 file or 'coco'")
     parser.add_argument('--logs', required=False,
                         default=DEFAULT_LOGS_DIR,
                         metavar="/path/to/logs/",
                         help='Logs and checkpoints directory (default=logs/)')
-    parser.add_argument('--limit', required=False,
-                        default=500,
-                        metavar="<image count>",
-                        help='Images to use for evaluation (default=500)')
+    parser.add_argument('--image', required=False,
+                        metavar="path or URL to image",
+                        help='Image to apply the color test effect on')
+    parser.add_argument('--video', required=False,
+                        metavar="path or URL to video",
+                        help='Video to apply the color test effect on')
     args = parser.parse_args()
-    print("Command: ", args.command)
-    print("Model: ", args.model)
+
+    # Validate arguments
+    if args.command == "train":
+        assert args.dataset, "Argument --dataset is required for training"
+    elif args.command == "test":
+        assert args.image or args.video,\
+               "Provide --image or --video to apply color test"
+
+    print("Weights: ", args.weights)
     print("Dataset: ", args.dataset)
     print("Logs: ", args.logs)
 
@@ -253,10 +544,9 @@ if __name__ == '__main__':
             # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1
-            DETECTION_MIN_CONFIDENCE = 0
         config = InferenceConfig()
     config.display()
-    dataset = BoxCarsDataset(load_split="hard", load_atlas=True)
+
     # Create model
     if args.command == "train":
         model = modellib.MaskRCNN(mode="training", config=config,
@@ -266,98 +556,37 @@ if __name__ == '__main__':
                                   model_dir=args.logs)
 
     # Select weights file to load
-    if args.model.lower() == "coco":
-        model_path = COCO_MODEL_PATH
-    elif args.model.lower() == "last":
+    if args.weights.lower() == "coco":
+        weights_path = COCO_WEIGHTS_PATH
+        # Download weights file
+        if not os.path.exists(weights_path):
+            utils.download_trained_weights(weights_path)
+    elif args.weights.lower() == "last":
         # Find last trained weights
-        model_path = model.find_last()
-    elif args.model.lower() == "imagenet":
+        weights_path = model.find_last()
+    elif args.weights.lower() == "imagenet":
         # Start from ImageNet trained weights
-        model_path = model.get_imagenet_weights()
+        weights_path = model.get_imagenet_weights()
     else:
-        model_path = args.model
+        weights_path = args.weights
 
     # Load weights
-    print("Loading weights ", model_path)
-    model.load_weights(model_path, by_name=True)
+    print("Loading weights ", weights_path)
+    if args.weights.lower() == "coco":
+        # Exclude the last layers because they require a matching
+        # number of classes
+        model.load_weights(weights_path, by_name=True, exclude=[
+            "mrcnn_class_logits", "mrcnn_bbox_fc",
+            "mrcnn_bbox", "mrcnn_mask"])
+    else:
+        model.load_weights(weights_path, by_name=True)
 
     # Train or evaluate
     if args.command == "train":
-        # Training dataset. Use the training set and 35K from the
-        # validation set, as as in the Mask RCNN paper.
-        dataset_train = BoxCarsDataset()
-        print("Training...")
-        # %% initialize dataset for training
-        dataset.initialize_data("train")
-        dataset.initialize_data("validation")
-        generator_train = BoxCarsDataGenerator(dataset, "train", args.batch_size, training_mode=True)
-        generator_val = BoxCarsDataGenerator(dataset, "validation", args.batch_size, training_mode=False)
-
-        # %% callbacks
-        ensure_dir(args.tensorboard_dir)
-        ensure_dir(args.snapshots_dir)
-        tb_callback = TensorBoard(args.tensorboard_dir, histogram_freq=1, write_graph=False, write_images=False)
-        saver_callback = ModelCheckpoint(os.path.join(args.snapshots_dir, "model_{epoch:03d}_{val_acc:.2f}.h5"),
-                                         period=4)
-
-        # %% get initial epoch
-        initial_epoch = 0
-        if args.resume is not None:
-            initial_epoch = int(os.path.basename(args.resume).split("_")[1]) + 1
-        #-----------------here so far--------------------
-        # need to figure how mask rcnn wants the data
-        #most likely I ll need to build a class that inherits utils.Dataset
-        dataset_train.load_coco(args.dataset, "train", year=args.year, auto_download=args.download)
-        if args.year in '2014':
-            dataset_train.load_coco(args.dataset, "valminusminival", year=args.year, auto_download=args.download)
-        dataset_train.prepare()
-
-        # Validation dataset
-        dataset_val = CocoDataset()
-        val_type = "val" if args.year in '2017' else "minival"
-        dataset_val.load_coco(args.dataset, val_type, year=args.year, auto_download=args.download)
-        dataset_val.prepare()
-
-        # Image Augmentation
-        # Right/Left flip 50% of the time
-        augmentation = imgaug.augmenters.Fliplr(0.5)
-
-        # *** This training schedule is an example. Update to your needs ***
-
-        # Training - Stage 1
-        print("Training network heads")
-        model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=40,
-                    layers='heads',
-                    augmentation=augmentation)
-
-        # Training - Stage 2
-        # Finetune layers from ResNet stage 4 and up
-        print("Fine tune Resnet stage 4 and up")
-        model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=120,
-                    layers='4+',
-                    augmentation=augmentation)
-
-        # Training - Stage 3
-        # Fine tune all layers
-        print("Fine tune all layers")
-        model.train(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE / 10,
-                    epochs=160,
-                    layers='all',
-                    augmentation=augmentation)
-
-    elif args.command == "evaluate":
-        # Validation dataset
-        dataset_val = CocoDataset()
-        val_type = "val" if args.year in '2017' else "minival"
-        coco = dataset_val.load_coco(args.dataset, val_type, year=args.year, return_coco=True, auto_download=args.download)
-        dataset_val.prepare()
-        print("Running COCO evaluation on {} images.".format(args.limit))
-        evaluate_coco(model, dataset_val, coco, "bbox", limit=int(args.limit))
+        train(model)
+    elif args.command == "test":
+        detect_and_color_splash(model, image_path=args.image,
+                                video_path=args.video)
     else:
         print("'{}' is not recognized. "
-              "Use 'train' or 'evaluate'".format(args.command))
+              "Use 'train' or 'test'".format(args.command))
