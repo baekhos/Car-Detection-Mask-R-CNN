@@ -43,8 +43,8 @@ class CarsConfig(Config):
     # Give the configuration a recognizable name
     NAME = "car"
 
-    # We use a GPU with 12GB memory, which can fit two images.
-    # Adjust down if you use a smaller GPU.
+    # We use a GPU with 6GB memory, which can fit one image.
+    # Adjust up if you use a stronger GPU.
     IMAGES_PER_GPU = 1
 
     # Number of classes (including background)
