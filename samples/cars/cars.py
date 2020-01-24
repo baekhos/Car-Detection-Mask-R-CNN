@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 
-import os
+import skimage.io
 import sys
-import time
+import pandas as pd
 import json
 import numpy as np
 import imgaug  # https://github.com/aleju/imgaug (pip3 install imgaug)
@@ -91,58 +91,36 @@ class CarsDataset(utils.Dataset):
         # Train or validation dataset?
         assert subset in ["train", "validation"]
 
-        self.initialize_data( subset)
-        dataset_dir = os.path.join(dataset_dir, subset)
 
-
-        annotations = json.load(open(os.path.join(dataset_dir, "via_region_data.json")))
-        annotations = list(annotations.values())  # don't need the dict keys
-
-        # The VIA tool saves images in the JSON even if they don't have any
-        # annotations. Skip unannotated images.
-        annotations = [a for a in annotations if a['regions']]
-
-
+        self.df = pd.read_pickle(BOXCARS_DATASET)
         # Add images
         for x in self.X[subset]:
             vehicle_id, instance_id = x
             vehicle, instance, polygons = self.get_vehicle_instance_data(vehicle_id, instance_id)
             image = self.get_image(vehicle_id, instance_id)
             height, width = image.shape[:2]
-
+            image_path=self.df['samples'][vehicle_id]['instances'][instance_id]['path']
+            _, filename = os.path.split(image_path)
             self.add_image(
                 "car",
-                image_id=a['filename'],  # use file name as a unique image id
+                image_id=filename,  # use file name as a unique image id
                 path=image_path,
                 width=width, height=height,
                 polygons=polygons)
 
+    def getMask2D(self, part, index):
+        vehicle_id, instance_id = self.X[part][index]
+        x1, y1, x2, y2 = self.df['samples'][vehicle_id]['instances'][instance_id]['2DBB']
+        return (int(y1), int(x1)), (int(y2 + y1), int(x2 + x1))
 
-
-    def load_mask(self, image_id):
-        """Generate instance masks for an image.
-       Returns:
-        masks: A bool array of shape [height, width, instance count] with
-            one mask per instance.
-        class_ids: a 1D array of class IDs of the instance masks.
-        """
-        # If not a car dataset image, delegate to parent class.
-        image_info = self.image_info[image_id]
-        if image_info["source"] != "car":
-            return super(self.__class__, self).load_mask(image_id)
-
-        # Convert polygons to a bitmap mask of shape
-        # [height, width, instance_count]
-        info = self.image_info[image_id]
-        mask = np.zeros([info["height"], info["width"], len(info["polygons"])],
-                        dtype=np.uint8)
-        for i, p in enumerate(info["polygons"]):
-            # Get indexes of pixels inside the polygon and set them to 1
-            rr, cc = skimage.draw.polygon(p['all_points_y'], p['all_points_x'])
-            mask[rr, cc, i] = 1
-
-        # Return mask, and array of class IDs of each instance. Since we have
-        # one class ID only, we return an array of 1s
+    def load_mask(self, part, image_id):
+        vehicle_id, instance_id = self.X[part][image_id]
+        image = self.get_image(part, image_id)
+        height, width = image.shape[:2]
+        mask = np.zeros([height, width, 1], dtype=np.uint8)
+        start, end = self.getMask2D(part, image_id)
+        rr, cc = skimage.draw.rectangle(start, end, shape=image.shape[:2])
+        mask[rr, cc] = 1
         return mask.astype(np.bool), np.ones([mask.shape[-1]], dtype=np.int32)
 
     def image_reference(self, image_id):
@@ -157,22 +135,13 @@ class CarsDataset(utils.Dataset):
         with open(path, "rb") as f:
             return pickle.load(f, encoding=encoding, fix_imports=True)
 
-    def get_vehicle_instance_data(self, vehicle_id, instance_id):
-        """
-        original_image_coordinates: the 3DBB coordinates are in the original image space
-                                    to convert them into cropped image space, it is necessary to subtract instance["3DBB_offset"]
-                                    which is done if this parameter is False.
-        """
-        vehicle = self.dataset["samples"][vehicle_id]
-        instance = vehicle["instances"][instance_id]
-        bb3d = self.estimated_3DBB[vehicle_id][instance_id]
-        bb3d = bb3d - instance["3DBB_offset"]
-        return vehicle, instance, bb3d
 
-    def get_image(self, vehicle_id, instance_id):
+
+    def get_image(self, part,image_id):
         """
         returns decoded image from atlas in RGB channel order
         """
+        vehicle_id, instance_id=self.X[part][image_id]
         return cv2.cvtColor(cv2.imdecode(self.atlas[vehicle_id][instance_id], 1), cv2.COLOR_BGR2RGB)
 
 
@@ -198,12 +167,12 @@ def train(model):
     """Train the model."""
     # Training dataset.
     dataset_train = CarsDataset()
-    dataset_train.load_car(args.dataset, "train")
+    dataset_train.load_car("train")
     dataset_train.prepare()
 
     # Validation dataset
     dataset_val = CarsDataset()
-    dataset_val.load_balloon(args.dataset, "val")
+    dataset_val.load_balloon(args.dataset, "validation")
     dataset_val.prepare()
 
     # *** This training schedule is an example. Update to your needs ***
@@ -306,7 +275,7 @@ if __name__ == '__main__':
                         metavar="/path/to/cars/dataset/",
                         help='Directory of the Cars dataset')
     parser.add_argument('--weights', required=True,
-                        metavar="/path/to/weights.h5",
+                        metavar="D:\\Master TAID\\Anul2\\MLAV\\Car-Detection-Mask-R-CNN\\mask_rcnn_coco.h5",
                         help="Path to weights .h5 file or 'coco'")
     parser.add_argument('--logs', required=False,
                         default=DEFAULT_LOGS_DIR,
