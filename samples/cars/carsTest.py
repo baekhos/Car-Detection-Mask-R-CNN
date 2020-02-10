@@ -6,9 +6,14 @@ import numpy as np
 import imgaug  # https://github.com/aleju/imgaug (pip3 install imgaug)
 import skimage.draw
 import pickle
+import tensorflow as tf
 import matplotlib.pyplot as plt
 from mrcnn.config import Config
 from mrcnn import model as modellib, utils
+from mrcnn import visualize
+from mrcnn.visualize import display_images
+import mrcnn.model as modellib
+from mrcnn.model import log
 import datetime
 import os
 import cv2
@@ -259,3 +264,51 @@ def get_ax(rows=1, cols=1, size=16):
     """
     _, ax = plt.subplots(rows, cols, figsize=(size * cols, size * rows))
     return ax
+# Load validation dataset
+dataset = CarsDataset()
+dataset.initialize_data('validation')
+
+# Must call before using the dataset
+dataset.prepare()
+
+print("Images: {}\nClasses: {}".format(len(dataset.image_ids), dataset.class_names))
+ROOT_DIR = os.path.abspath("../../")
+MODEL_DIR = os.path.join(ROOT_DIR, "\\samples\\cars\\logs")
+DEVICE = "/cpu:0"
+# Create model in inference mode
+with tf.device(DEVICE):
+    model = modellib.MaskRCNN(mode="inference", model_dir=MODEL_DIR,
+                              config=config)
+# Load validation dataset
+dataset = CarsDataset()
+dataset.initialize_data('validation')
+
+# Must call before using the dataset
+dataset.prepare()
+
+print("Images: {}\nClasses: {}".format(len(dataset.image_ids), dataset.class_names))
+
+# Or, load the last model you trained
+weights_path ='D:\\Master TAID\\Anul2\\MLAV\\Car-Detection-Mask-R-CNN\\samples\\cars\\logs\\car20200125T0225\\mask_rcnn_car.h5'
+
+# Load weights
+import random
+print("Loading weights ", weights_path)
+model.load_weights(weights_path, by_name=True)
+image_id = random.choice(dataset.image_ids)
+image, image_meta, gt_class_id, gt_bbox, gt_mask =\
+    modellib.load_image_gt(dataset, config, image_id, use_mini_mask=False)
+info = dataset.image_info[image_id]
+results = model.detect([image], verbose=1)
+
+# Display results
+ax = get_ax(1)
+r = results[0]
+visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'],
+                            dataset.class_names, r['scores'], ax=ax,
+                            title="Predictions")
+log("gt_class_id", gt_class_id)
+log("gt_bbox", gt_bbox)
+log("gt_mask", gt_mask)
+splash = color_splash(image, r['masks'])
+display_images([splash], cols=1)
